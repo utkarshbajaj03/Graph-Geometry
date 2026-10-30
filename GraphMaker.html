@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GraphMaker</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 0; background: #f2f3f5; color: #1a1a1a;
+  }
+  #toolbar {
+    padding: 10px 14px; background: #fff; border-bottom: 1px solid #ddd;
+    display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center;
+  }
+  #toolbar h1 { font-size: 16px; margin: 0 16px 0 0; }
+  .mode-btn {
+    padding: 6px 12px; border: 1px solid #999; border-radius: 6px;
+    background: #fff; cursor: pointer; font-size: 13px;
+  }
+  .mode-btn.active { background: #2d6cdf; color: #fff; border-color: #2d6cdf; }
+  .toolbar-btn {
+    padding: 6px 12px; border: 1px solid #999; border-radius: 6px;
+    background: #fff; cursor: pointer; font-size: 13px;
+  }
+  .ctx-row { display: none; align-items: center; gap: 10px; font-size: 13px; padding: 6px 0 0 0;
+    border-top: 1px dashed #ddd; margin-top: 4px; width: 100%; }
+  #main { display: flex; gap: 14px; padding: 14px; align-items: flex-start; }
+  #canvasWrap { background: #fff; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; flex: 0 0 auto; }
+  svg { display: block; }
+  #sidebar { width: 320px; display: flex; flex-direction: column; gap: 12px; }
+  .panel { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 12px; }
+  .panel h3 { margin: 0 0 8px 0; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: #666; }
+  .row { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+  .chart-item { display: flex; align-items: center; gap: 6px; padding: 4px 6px; border-radius: 4px; font-size: 13px; }
+  .chart-item.editing { background: #fff6cc; }
+  .chart-item.selected { background: #e8f0fe; }
+  .chart-item button { font-size: 11px; padding: 2px 6px; }
+  button { cursor: pointer; }
+  textarea { width: 100%; font-family: ui-monospace, Menlo, monospace; font-size: 11px; height: 70px; }
+  .hint { color: #777; font-size: 12px; }
+  .del-btn { margin-top: 4px; background: #e63946; color: #fff; border: none; padding: 6px 10px; border-radius: 5px; }
+  label { font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>GraphMaker</h1>
+  <button class="mode-btn" data-mode="select">Select / Move</button>
+  <button class="mode-btn" data-mode="addVertex">Add Vertex</button>
+  <button class="mode-btn" data-mode="addEdge">Add Edge</button>
+  <button class="mode-btn" data-mode="buildChart">Build Chart</button>
+  <button class="toolbar-btn" id="undoBtn">Undo (Ctrl/Cmd+Z)</button>
+  <button class="toolbar-btn" id="clearAllBtn">Clear All</button>
+  <label><input type="checkbox" id="showLabelsInput" checked> Show vertex labels</label>
+
+  <div id="ctxAddVertex" class="ctx-row">
+    New vertex color: <input type="color" id="newVertexColorInput" value="#000000">
+    <label><input type="checkbox" id="newVertexAutoConnectInput"> Auto-connect from last vertex</label>
+  </div>
+  <div id="ctxAddEdge" class="ctx-row">
+    New edge color: <input type="color" id="newEdgeColorInput" value="#000000">
+    Thickness: <input type="range" id="newEdgeWidthInput" min="1" max="10" step="0.5" value="2.5">
+    <label><input type="checkbox" id="newEdgeDirectedInput" checked> Directed</label>
+    <span id="addEdgeHint" class="hint"></span>
+  </div>
+  <div id="ctxBuildChart" class="ctx-row">
+    Chart color: <input type="color" id="newChartColorInput" value="#7fb3ff">
+    Opacity: <input type="range" id="newChartOpacityInput" min="0.05" max="0.9" step="0.01" value="0.35">
+    <label><input type="checkbox" id="chartAutoFillInput" checked> Auto-fill vertices along edges</label>
+    <span class="hint">Click vertices or edges to toggle membership.</span>
+    <button class="toolbar-btn" id="finishChartBtn">Finish Chart</button>
+    <button class="toolbar-btn" id="cancelChartBtn">Cancel</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="canvasWrap">
+    <svg id="canvas" width="800" height="560" viewBox="0 0 800 560"></svg>
+  </div>
+
+  <div id="sidebar">
+    <div class="panel">
+      <h3>Selected item</h3>
+      <div id="selectionPanel"><span class="hint">Click a vertex, edge, or chart to edit it. Drag a vertex to move it.</span></div>
+    </div>
+    <div class="panel">
+      <h3>Charts (covers)</h3>
+      <div id="chartsLegend"><span class="hint">No charts yet.</span></div>
+    </div>
+    <div class="panel">
+      <h3>Import from Mathematica</h3>
+      <div class="hint" style="margin-bottom:6px;">
+        A live link to a running notebook isn't possible from a static web page. Paste a
+        <code>Graph[...]</code> expression (e.g. from <code>ToString[g, InputForm]</code>, or the
+        text produced by this app's own "Copy as Graph[...]" button) below to load it here.
+      </div>
+      <textarea id="wlImportInput" placeholder="Graph[{1, 2, 3}, {UndirectedEdge[1, 2], ...}, VertexCoordinates -> {...}, ...]"></textarea>
+      <div class="row" style="margin-top: 6px;">
+        <button class="toolbar-btn" id="importWLBtn">Parse &amp; Load Graph</button>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>Export</h3>
+      <div class="row">
+        <button class="toolbar-btn" id="exportWLBtn">Copy as Graph[...] (Mathematica)</button>
+      </div>
+      <textarea id="wlOutput" readonly placeholder="Graph[...] will appear here"></textarea>
+      <div class="hint" style="margin: 4px 0;">Charts / covers (vertices + edges per chart):</div>
+      <textarea id="coverOutput" readonly placeholder="{{...}, {...}} will appear here"></textarea>
+      <div class="row" style="margin-top: 8px;">
+        <button class="toolbar-btn" id="exportJSONBtn">Export JSON</button>
+        <label class="toolbar-btn" style="display:inline-block;">Import JSON
+          <input type="file" id="importJSONInput" accept="application/json" style="display:none;">
+        </label>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const svgNS = "http://www.w3.org/2000/svg";
+const VIEW_W = 800, VIEW_H = 560, VR = 18;
+
+function el(tag, attrs, ...children) {
+  const e = document.createElementNS(svgNS, tag);
+  for (const k in (attrs || {})) {
+    const v = attrs[k];
+    if (v !== undefined && v !== null) e.setAttribute(k, v);
+  }
+  children.flat().forEach(ch => {
+    if (ch === undefined || ch === null) return;
+    if (typeof ch === "string" || typeof ch === "number") e.appendChild(document.createTextNode(ch));
+    else e.appendChild(ch);
+  });
+  return e;
+}
+
+function freshState() {
+  return { vertices: {}, edges: [], charts: [], nextVertexId: 1, nextEdgeId: 1, nextChartId: 1 };
+}
+
+let state = freshState();
+let selection = null;          // {type:'vertex'|'edge'|'chart', id}
+let mode = "select";
+let addEdgeFirst = null;
+let buildingChart = [];
+let buildingChartEdges = [];
+let editingChartId = null;
+let showLabels = true;
+let newVertexColor = "#000000";
+let newVertexAutoConnect = false;
+let lastPlacedVertexId = null;
+let newEdgeColor = "#000000";
+let newEdgeDirected = true;
+let newEdgeWidth = 2.5;
+let newChartColor = "#7fb3ff";
+let newChartOpacity = 0.35;
+let chartAutoFillVertices = true;
+let history = [];
+let animOverlayEls = [];
+
+/* ---------- undo ---------- */
+function pushUndo() {
+  history.push(JSON.parse(JSON.stringify({
+    vertices: state.vertices, edges: state.edges, charts: state.charts,
+    nextVertexId: state.nextVertexId, nextEdgeId: state.nextEdgeId, nextChartId: state.nextChartId
+  })));
+  if (history.length > 60) history.shift();
+}
+function undo() {
+  if (!history.length) return;
+  state = history.pop();
+  selection = null; editingChartId = null; addEdgeFirst = null; buildingChart = []; buildingChartEdges = []; lastPlacedVertexId = null;
+  render();
+  flashButton(document.getElementById("undoBtn"), "rgba(45,108,223,0.4)");
+}
+function flashButton(btn, color) {
+  btn.style.transition = "none";
+  btn.style.backgroundColor = color;
+  btn.style.borderColor = color;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    btn.style.transition = "background-color 380ms ease, border-color 380ms ease";
+    btn.style.backgroundColor = "";
+    btn.style.borderColor = "";
+  }));
+}
+window.addEventListener("keydown", ev => {
+  if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "z") {
+    ev.preventDefault();
+    undo();
+    return;
+  }
+  if (ev.key === "Delete" || ev.key === "Backspace") {
+    const tag = document.activeElement && document.activeElement.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA") return;
+    if (!selection) return;
+    ev.preventDefault();
+    if (selection.type === "vertex") deleteVertex(selection.id);
+    else if (selection.type === "edge") deleteEdge(selection.id);
+    else if (selection.type === "chart") deleteChart(selection.id);
+  }
+});
+
+/* ---------- mode handling ---------- */
+function setMode(m) {
+  mode = m;
+  addEdgeFirst = null;
+  if (m !== "buildChart") { buildingChart = []; buildingChartEdges = []; }
+  if (m !== "select") editingChartId = null;
+  if (m !== "addVertex") lastPlacedVertexId = null;
+  render();
+}
+document.querySelectorAll(".mode-btn").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+
+/* ---------- geometry helpers ---------- */
+function svgPoint(ev) {
+  const svg = document.getElementById("canvas");
+  const pt = svg.createSVGPoint();
+  pt.x = ev.clientX; pt.y = ev.clientY;
+  return pt.matrixTransform(svg.getScreenCTM().inverse());
+}
+
+/* ---------- mutations ---------- */
+function deleteVertex(id) {
+  pushUndo();
+  delete state.vertices[id];
+  const removedEdgeIds = state.edges.filter(e => e.from === id || e.to === id).map(e => e.id);
+  state.edges = state.edges.filter(e => e.from !== id && e.to !== id);
+  state.charts.forEach(c => {
+    c.vertices = c.vertices.filter(v => v !== id);
+    c.edges = (c.edges || []).filter(eid => !removedEdgeIds.includes(eid));
+  });
+  state.charts = state.charts.filter(c => c.vertices.length > 0 || c.edges.length > 0);
+  if (selection && selection.type === "vertex" && selection.id === id) selection = null;
+  if (addEdgeFirst === id) addEdgeFirst = null;
+  if (lastPlacedVertexId === id) lastPlacedVertexId = null;
+  buildingChart = buildingChart.filter(v => v !== id);
+  buildingChartEdges = buildingChartEdges.filter(eid => !removedEdgeIds.includes(eid));
+  if (editingChartId !== null && !state.charts.some(c => c.id === editingChartId)) editingChartId = null;
+  render();
+}
+function deleteEdge(id) {
+  pushUndo();
+  state.edges = state.edges.filter(e => e.id !== id);
+  state.charts.forEach(c => { c.edges = (c.edges || []).filter(eid => eid !== id); });
+  state.charts = state.charts.filter(c => c.vertices.length > 0 || c.edges.length > 0);
+  buildingChartEdges = buildingChartEdges.filter(eid => eid !== id);
+  if (selection && selection.type === "edge" && selection.id === id) selection = null;
+  render();
+}
+function deleteChart(id) {
+  pushUndo();
+  state.charts = state.charts.filter(c => c.id !== id);
+  if (editingChartId === id) editingChartId = null;
+  if (selection && selection.type === "chart" && selection.id === id) selection = null;
+  render();
+}
+
+/* ---------- edge grow animation (CSS-driven, compositor-smooth) ---------- */
+function animateEdgeGrow(edge) {
+  const a = state.vertices[edge.from], b = state.vertices[edge.to];
+  if (!a || !b) { edge._animating = false; render(); return; }
+  edge._animating = true;
+  const len = Math.hypot(b.x - a.x, b.y - a.y) || 1;
+  const line = el("line", {
+    x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: edge.color, "stroke-width": edge.width || 2.5,
+    "stroke-linecap": "round", "stroke-dasharray": len, "stroke-dashoffset": len
+  });
+  animOverlayEls = [line];
+  document.getElementById("canvas").appendChild(line);
+  const finish = () => {
+    line.removeEventListener("transitionend", finish);
+    edge._animating = false;
+    animOverlayEls = [];
+    render();
+    requestAnimationFrame(() => {
+      const arrowEl = document.querySelector(`[data-arrow-for="${edge.id}"]`);
+      if (arrowEl) {
+        arrowEl.style.opacity = 0;
+        requestAnimationFrame(() => {
+          arrowEl.style.transition = "opacity 220ms ease";
+          arrowEl.style.opacity = 1;
+        });
+      }
+    });
+  };
+  line.addEventListener("transitionend", finish);
+  // Two nested rAFs guarantee the browser commits the initial (fully-hidden) state
+  // to a frame before the transition target is applied, so the transition reliably fires.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    line.style.transition = "stroke-dashoffset 380ms cubic-bezier(0.65, 0, 0.35, 1)";
+    line.style.strokeDashoffset = "0";
+  }));
+}
+
+/* ---------- click handlers ---------- */
+function onBackgroundClick(ev) {
+  const p = svgPoint(ev);
+  if (mode === "addVertex") {
+    pushUndo();
+    const id = state.nextVertexId++;
+    state.vertices[id] = { x: p.x, y: p.y, color: newVertexColor, label: String(id) };
+    let newEdge = null;
+    if (newVertexAutoConnect && lastPlacedVertexId !== null && state.vertices[lastPlacedVertexId]) {
+      newEdge = { id: state.nextEdgeId++, from: lastPlacedVertexId, to: id, directed: newEdgeDirected, color: newEdgeColor, width: newEdgeWidth, _animating: true };
+      state.edges.push(newEdge);
+    }
+    lastPlacedVertexId = id;
+    render();
+    if (newEdge) animateEdgeGrow(newEdge);
+    return;
+  }
+  if (mode === "addEdge") { addEdgeFirst = null; render(); return; }
+  if (mode === "buildChart") return;
+  selection = null;
+  editingChartId = null;
+  render();
+}
+
+function handleVertexClick(id) {
+  if (mode === "addEdge") {
+    if (addEdgeFirst === null) { addEdgeFirst = id; render(); return; }
+    if (addEdgeFirst === id) { addEdgeFirst = null; render(); return; }
+    pushUndo();
+    const e = { id: state.nextEdgeId++, from: addEdgeFirst, to: id, directed: newEdgeDirected, color: newEdgeColor, width: newEdgeWidth, _animating: true };
+    state.edges.push(e);
+    addEdgeFirst = null;
+    render();
+    animateEdgeGrow(e);
+    return;
+  }
+  if (mode === "buildChart") {
+    buildingChart = buildingChart.includes(id) ? buildingChart.filter(v => v !== id) : [...buildingChart, id];
+    render();
+    return;
+  }
+  if (mode === "select" && editingChartId !== null) {
+    pushUndo();
+    const ch = state.charts.find(c => c.id === editingChartId);
+    if (ch) ch.vertices = ch.vertices.includes(id) ? ch.vertices.filter(v => v !== id) : [...ch.vertices, id];
+    render();
+    return;
+  }
+  if (mode === "select") { selection = { type: "vertex", id }; render(); }
+}
+
+function onVertexMouseDown(ev, id) {
+  ev.stopPropagation();
+  const startPt = svgPoint(ev);
+  let moved = false;
+  function onMove(ev2) {
+    const p = svgPoint(ev2);
+    if (!moved && (Math.abs(p.x - startPt.x) > 4 || Math.abs(p.y - startPt.y) > 4)) {
+      moved = true;
+      pushUndo();
+    }
+    if (moved) {
+      state.vertices[id].x = p.x;
+      state.vertices[id].y = p.y;
+      render();
+    }
+  }
+  function onUp() {
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+    if (!moved) handleVertexClick(id);
+  }
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+function onEdgeClick(id) {
+  if (mode === "buildChart") {
+    const adding = !buildingChartEdges.includes(id);
+    buildingChartEdges = adding ? [...buildingChartEdges, id] : buildingChartEdges.filter(e => e !== id);
+    if (adding && chartAutoFillVertices) {
+      const edge = state.edges.find(x => x.id === id);
+      if (edge) {
+        if (!buildingChart.includes(edge.from)) buildingChart = [...buildingChart, edge.from];
+        if (!buildingChart.includes(edge.to)) buildingChart = [...buildingChart, edge.to];
+      }
+    }
+    render();
+    return;
+  }
+  if (mode === "select" && editingChartId !== null) {
+    pushUndo();
+    const ch = state.charts.find(c => c.id === editingChartId);
+    if (ch) {
+      ch.edges = ch.edges || [];
+      const adding = !ch.edges.includes(id);
+      ch.edges = adding ? [...ch.edges, id] : ch.edges.filter(e => e !== id);
+      if (adding && chartAutoFillVertices) {
+        const edge = state.edges.find(x => x.id === id);
+        if (edge) {
+          if (!ch.vertices.includes(edge.from)) ch.vertices = [...ch.vertices, edge.from];
+          if (!ch.vertices.includes(edge.to)) ch.vertices = [...ch.vertices, edge.to];
+        }
+      }
+    }
+    render();
+    return;
+  }
+  if (mode !== "select" || editingChartId !== null) return;
+  selection = { type: "edge", id };
+  render();
+}
+function onChartClick(id) {
+  if (mode !== "select" || editingChartId !== null) return;
+  selection = { type: "chart", id };
+  render();
+}
+
+/* ---------- rendering ---------- */
+function makeChartElement(c, dashed) {
+  const highlighted = !dashed && (editingChartId === c.id || (selection && selection.type === "chart" && selection.id === c.id));
+  const g = el("g", { opacity: highlighted ? Math.min(c.opacity + 0.35, 1) : c.opacity, style: "cursor:pointer;" });
+  if (!dashed) g.addEventListener("click", ev => { ev.stopPropagation(); onChartClick(c.id); });
+  const edgeIds = c.edges || [];
+  edgeIds.forEach(eid => {
+    const e = state.edges.find(x => x.id === eid);
+    if (!e) return;
+    const a = state.vertices[e.from], b = state.vertices[e.to];
+    if (!a || !b) return;
+    g.appendChild(el("line", {
+      x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: c.color, "stroke-width": 44,
+      "stroke-linecap": "round", "stroke-dasharray": dashed ? "6,6" : undefined
+    }));
+  });
+  c.vertices.forEach(v => {
+    const p = state.vertices[v];
+    if (p) g.appendChild(el("circle", { cx: p.x, cy: p.y, r: 30, fill: c.color, "stroke-dasharray": dashed ? "4,4" : undefined }));
+  });
+  return g;
+}
+
+function makeEdgeElement(e, defsEl) {
+  const a = state.vertices[e.from], b = state.vertices[e.to];
+  if (!a || !b) return el("g", {});
+  const selected = selection && selection.type === "edge" && selection.id === e.id;
+  const color = selected ? "#e63946" : e.color;
+  const width = e.width || 2.5;
+  const g = el("g", {});
+  let haloColor = null;
+  if (mode === "buildChart" && buildingChartEdges.includes(e.id)) haloColor = newChartColor;
+  else if (editingChartId !== null) {
+    const ch = state.charts.find(c => c.id === editingChartId);
+    if (ch && (ch.edges || []).includes(e.id)) haloColor = ch.color;
+  }
+  if (haloColor) {
+    g.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: haloColor, "stroke-width": width + 8, "stroke-linecap": "round", opacity: 0.55 }));
+  }
+  g.appendChild(el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: color, "stroke-width": selected ? width + 1.5 : width }));
+  if (e.directed) {
+    const markerId = "arrow-" + e.id;
+    defsEl.appendChild(el("marker",
+      { id: markerId, viewBox: "0 0 10 10", refX: 8, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse" },
+      el("path", { d: "M0,0 L10,5 L0,10 z", fill: color })));
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    const dx = (b.x - a.x) * 0.15, dy = (b.y - a.y) * 0.15;
+    g.appendChild(el("line", {
+      x1: mx - dx, y1: my - dy, x2: mx + dx, y2: my + dy, stroke: color, "stroke-width": width,
+      "marker-end": `url(#${markerId})`, "data-arrow-for": e.id
+    }));
+  }
+  const hit = el("line", { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: "transparent", "stroke-width": 16, style: "cursor:pointer;" });
+  hit.addEventListener("click", ev => { ev.stopPropagation(); onEdgeClick(e.id); });
+  g.appendChild(hit);
+  return g;
+}
+
+function render() {
+  const svg = document.getElementById("canvas");
+  svg.innerHTML = "";
+
+  const defs = el("defs", {});
+  svg.appendChild(defs);
+
+  const bg = el("rect", { x: 0, y: 0, width: VIEW_W, height: VIEW_H, fill: "#ffffff" });
+  bg.addEventListener("click", onBackgroundClick);
+  svg.appendChild(bg);
+
+  const chartsG = el("g", {});
+  state.charts.forEach(c => chartsG.appendChild(makeChartElement(c, false)));
+  if (mode === "buildChart" && (buildingChart.length || buildingChartEdges.length)) {
+    chartsG.appendChild(makeChartElement({ vertices: buildingChart, edges: buildingChartEdges, color: newChartColor, opacity: newChartOpacity * 0.6 }, true));
+  }
+  svg.appendChild(chartsG);
+
+  const edgesG = el("g", {});
+  state.edges.forEach(e => { if (!e._animating) edgesG.appendChild(makeEdgeElement(e, defs)); });
+  svg.appendChild(edgesG);
+
+  animOverlayEls.forEach(elx => svg.appendChild(elx));
+
+  const vG = el("g", {});
+  Object.keys(state.vertices).forEach(key => {
+    const id = Number(key);
+    const p = state.vertices[id];
+    const selected = selection && selection.type === "vertex" && selection.id === id;
+    let ring = "#000", ringW = 2;
+    if (selected) { ring = "#e63946"; ringW = 4; }
+    else if (mode === "addEdge" && addEdgeFirst === id) { ring = "#2d6cdf"; ringW = 4; }
+    else if (mode === "addVertex" && newVertexAutoConnect && lastPlacedVertexId === id) { ring = newEdgeColor; ringW = 4; }
+    else if (mode === "buildChart" && buildingChart.includes(id)) { ring = newChartColor; ringW = 4; }
+    else if (editingChartId !== null) {
+      const ch = state.charts.find(c => c.id === editingChartId);
+      if (ch && ch.vertices.includes(id)) { ring = ch.color; ringW = 4; }
+    }
+    const circle = el("circle", { cx: p.x, cy: p.y, r: VR, fill: p.color, stroke: ring, "stroke-width": ringW, style: "cursor:pointer;" });
+    circle.addEventListener("mousedown", ev => onVertexMouseDown(ev, id));
+    vG.appendChild(circle);
+    if (showLabels) {
+      vG.appendChild(el("text", {
+        x: p.x, y: p.y - VR - 6, "text-anchor": "middle", "font-size": 12, fill: "#111",
+        style: "pointer-events:none;user-select:none;"
+      }, p.label !== undefined && p.label !== "" ? p.label : String(id)));
+    }
+  });
+  svg.appendChild(vG);
+
+  updateToolbarContext();
+  updateSidebar();
+}
+
+function updateToolbarContext() {
+  document.querySelectorAll(".mode-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === mode));
+  document.getElementById("ctxAddVertex").style.display = mode === "addVertex" ? "flex" : "none";
+  document.getElementById("ctxAddEdge").style.display = mode === "addEdge" ? "flex" : "none";
+  document.getElementById("ctxBuildChart").style.display = mode === "buildChart" ? "flex" : "none";
+  document.getElementById("addEdgeHint").textContent = addEdgeFirst !== null
+    ? `Click a second vertex to connect from #${addEdgeFirst} (click it again to cancel).`
+    : "Click a vertex to start an edge.";
+}
+
+/* ---------- sidebar (HTML) ---------- */
+function panelHeader(text) {
+  const h = document.createElement("div");
+  h.style.cssText = "font-weight:600;margin-bottom:6px;";
+  h.textContent = text;
+  return h;
+}
+function colorRow(label, value, onChange) {
+  const row = document.createElement("div"); row.className = "row";
+  const l = document.createElement("label"); l.textContent = label + ": ";
+  const input = document.createElement("input"); input.type = "color"; input.value = value;
+  input.oninput = () => onChange(input.value);
+  row.append(l, input);
+  return row;
+}
+function textRow(label, value, onChange) {
+  const row = document.createElement("div"); row.className = "row";
+  const l = document.createElement("label"); l.textContent = label + ": ";
+  const input = document.createElement("input"); input.type = "text"; input.value = value; input.style.width = "140px";
+  input.onchange = () => onChange(input.value);
+  row.append(l, input);
+  return row;
+}
+function checkRow(label, value, onChange) {
+  const row = document.createElement("div"); row.className = "row";
+  const l = document.createElement("label");
+  const input = document.createElement("input"); input.type = "checkbox"; input.checked = value;
+  input.onchange = () => onChange(input.checked);
+  l.append(input, document.createTextNode(" " + label));
+  row.append(l);
+  return row;
+}
+function sliderRow(label, value, min, max, onChange) {
+  const row = document.createElement("div"); row.className = "row";
+  const l = document.createElement("label"); l.textContent = label + ": ";
+  const input = document.createElement("input");
+  input.type = "range"; input.min = min; input.max = max; input.step = 0.01; input.value = value;
+  input.oninput = () => onChange(parseFloat(input.value));
+  row.append(l, input);
+  return row;
+}
+function deleteButton(label, onClick) {
+  const btn = document.createElement("button");
+  btn.textContent = label; btn.className = "del-btn";
+  btn.onclick = onClick;
+  return btn;
+}
+
+function updateSidebar() {
+  const sel = document.getElementById("selectionPanel");
+  sel.innerHTML = "";
+  if (selection && selection.type === "vertex" && state.vertices[selection.id]) {
+    const v = state.vertices[selection.id];
+    sel.append(
+      panelHeader("Vertex " + selection.id),
+      colorRow("Color", v.color, c => { pushUndo(); v.color = c; render(); }),
+      textRow("Label", v.label !== undefined ? v.label : String(selection.id), t => { pushUndo(); v.label = t; render(); }),
+      deleteButton("Delete Vertex", () => deleteVertex(selection.id))
+    );
+  } else if (selection && selection.type === "edge" && state.edges.some(e => e.id === selection.id)) {
+    const e = state.edges.find(x => x.id === selection.id);
+    if (e.width === undefined) e.width = 2.5;
+    sel.append(
+      panelHeader(`Edge ${e.from} \u2192 ${e.to}`),
+      colorRow("Color", e.color, c => { pushUndo(); e.color = c; render(); }),
+      sliderRow("Thickness", e.width, 1, 10, w => { pushUndo(); e.width = w; render(); }),
+      checkRow("Directed", e.directed, b => { pushUndo(); e.directed = b; render(); }),
+      deleteButton("Delete Edge", () => deleteEdge(e.id))
+    );
+  } else if (selection && selection.type === "chart" && state.charts.some(c => c.id === selection.id)) {
+    const c = state.charts.find(x => x.id === selection.id);
+    c.edges = c.edges || [];
+    sel.append(
+      panelHeader(`Chart ${c.id} (${c.vertices.length}v, ${c.edges.length}e)`),
+      colorRow("Color", c.color, col => { c.color = col; render(); }),
+      sliderRow("Opacity", c.opacity, 0.05, 0.9, o => { c.opacity = o; render(); })
+    );
+    const editBtn = document.createElement("button");
+    editBtn.className = "toolbar-btn";
+    editBtn.textContent = editingChartId === c.id ? "Done Editing Membership" : "Edit Membership (click vertices/edges)";
+    editBtn.onclick = () => { editingChartId = editingChartId === c.id ? null : c.id; render(); };
+    sel.append(editBtn, deleteButton("Delete Chart", () => deleteChart(c.id)));
+  } else {
+    selection = null;
+    sel.innerHTML = '<span class="hint">Click a vertex, edge, or chart to edit it. Drag a vertex to move it.</span>';
+  }
+  renderChartsLegend();
+}
+
+function renderChartsLegend() {
+  const wrap = document.getElementById("chartsLegend");
+  wrap.innerHTML = "";
+  if (!state.charts.length) { wrap.innerHTML = '<span class="hint">No charts yet.</span>'; return; }
+  state.charts.forEach(c => {
+    const row = document.createElement("div");
+    row.className = "chart-item" +
+      (editingChartId === c.id ? " editing" : "") +
+      (selection && selection.type === "chart" && selection.id === c.id ? " selected" : "");
+    const swatch = document.createElement("span");
+    swatch.style.cssText = `display:inline-block;width:14px;height:14px;border-radius:50%;background:${c.color};border:1px solid #999;`;
+    const label = document.createElement("span");
+    label.textContent = `Chart ${c.id} (${c.vertices.length}v, ${(c.edges || []).length}e)`;
+    const selBtn = document.createElement("button");
+    selBtn.textContent = "Select";
+    selBtn.onclick = () => { selection = { type: "chart", id: c.id }; render(); };
+    row.append(swatch, label, selBtn);
+    wrap.appendChild(row);
+  });
+}
+
+/* ---------- toolbar wiring ---------- */
+document.getElementById("newVertexColorInput").oninput = e => newVertexColor = e.target.value;
+document.getElementById("newVertexAutoConnectInput").onchange = e => { newVertexAutoConnect = e.target.checked; lastPlacedVertexId = null; };
+document.getElementById("newEdgeColorInput").oninput = e => newEdgeColor = e.target.value;
+document.getElementById("newEdgeWidthInput").oninput = e => newEdgeWidth = parseFloat(e.target.value);
+document.getElementById("newEdgeDirectedInput").onchange = e => newEdgeDirected = e.target.checked;
+document.getElementById("newChartColorInput").oninput = e => { newChartColor = e.target.value; render(); };
+document.getElementById("newChartOpacityInput").oninput = e => { newChartOpacity = parseFloat(e.target.value); render(); };
+document.getElementById("chartAutoFillInput").onchange = e => { chartAutoFillVertices = e.target.checked; };
+document.getElementById("finishChartBtn").onclick = () => {
+  if (buildingChart.length >= 1 || buildingChartEdges.length >= 1) {
+    pushUndo();
+    state.charts.push({ id: state.nextChartId++, vertices: [...buildingChart], edges: [...buildingChartEdges], color: newChartColor, opacity: newChartOpacity });
+    buildingChart = [];
+    buildingChartEdges = [];
+    setMode("select");
+  }
+};
+document.getElementById("cancelChartBtn").onclick = () => { buildingChart = []; buildingChartEdges = []; setMode("select"); };
+document.getElementById("showLabelsInput").onchange = e => { showLabels = e.target.checked; render(); };
+document.getElementById("undoBtn").onclick = undo;
+document.getElementById("clearAllBtn").onclick = () => {
+  pushUndo();
+  state = freshState();
+  selection = null; editingChartId = null; buildingChart = []; buildingChartEdges = []; addEdgeFirst = null; lastPlacedVertexId = null;
+  render();
+  flashButton(document.getElementById("clearAllBtn"), "rgba(230,57,70,0.4)");
+};
+
+/* ---------- export ---------- */
+function toWLColor(hex) {
+  const r = parseInt(hex.substr(1, 2), 16) / 255;
+  const g = parseInt(hex.substr(3, 2), 16) / 255;
+  const b = parseInt(hex.substr(5, 2), 16) / 255;
+  return `RGBColor[${r.toFixed(3)}, ${g.toFixed(3)}, ${b.toFixed(3)}]`;
+}
+function buildWLGraphString() {
+  const ids = Object.keys(state.vertices).map(Number);
+  const cx = VIEW_W / 2, cy = VIEW_H / 2, scale = 40;
+  const vertexList = "{" + ids.join(", ") + "}";
+  const edgeList = "{" + state.edges.map(e =>
+    (e.directed ? "DirectedEdge" : "UndirectedEdge") + `[${e.from}, ${e.to}]`).join(", ") + "}";
+  const coords = "{" + ids.map(id => {
+    const v = state.vertices[id];
+    const x = ((v.x - cx) / scale).toFixed(3);
+    const y = ((cy - v.y) / scale).toFixed(3);
+    return `${id} -> {${x}, ${y}}`;
+  }).join(", ") + "}";
+  const vStyle = "{" + ids.map(id => `${id} -> ${toWLColor(state.vertices[id].color)}`).join(", ") + "}";
+  const eStyle = "{" + state.edges.map(e => {
+    const head = e.directed ? "DirectedEdge" : "UndirectedEdge";
+    return `${head}[${e.from}, ${e.to}] -> ${toWLColor(e.color)}`;
+  }).join(", ") + "}";
+  const vLabels = "{" + ids.map(id => {
+    const lbl = (state.vertices[id].label !== undefined ? state.vertices[id].label : String(id)).replace(/"/g, '\\"');
+    return `${id} -> "${lbl}"`;
+  }).join(", ") + "}";
+  return `Graph[${vertexList}, ${edgeList}, VertexCoordinates -> ${coords}, VertexStyle -> ${vStyle}, ` +
+    `EdgeStyle -> ${eStyle}, VertexLabels -> ${vLabels}, VertexSize -> 0.25]`;
+}
+function buildCoverString() {
+  return "{" + state.charts.map(c => {
+    const vs = "{" + c.vertices.join(", ") + "}";
+    const es = "{" + (c.edges || []).map(eid => {
+      const e = state.edges.find(x => x.id === eid);
+      if (!e) return "";
+      return (e.directed ? "DirectedEdge" : "UndirectedEdge") + `[${e.from}, ${e.to}]`;
+    }).filter(Boolean).join(", ") + "}";
+    return `<|"Vertices" -> ${vs}, "Edges" -> ${es}|>`;
+  }).join(", ") + "}";
+}
+/* ---------- import from Mathematica (best-effort Graph[...] parser) ---------- */
+function hsvToHex(h, s, v) {
+  h = ((h % 1) + 1) % 1;
+  const i = Math.floor(h * 6), f = h * 6 - i;
+  const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+  let r, g, b;
+  switch (i % 6) {
+    case 0: r = v; g = t; b = p; break;
+    case 1: r = q; g = v; b = p; break;
+    case 2: r = p; g = v; b = t; break;
+    case 3: r = p; g = q; b = v; break;
+    case 4: r = t; g = p; b = v; break;
+    default: r = v; g = p; b = q;
+  }
+  const toHex = x => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, "0");
+  return "#" + toHex(r) + toHex(g) + toHex(b);
+}
+function fromWLColor(str) {
+  str = str.trim();
+  const named = {
+    Black: "#000000", White: "#ffffff", Red: "#ff0000", Green: "#00ff00", Blue: "#0000ff",
+    Gray: "#808080", Yellow: "#ffff00", Orange: "#ffa500", Purple: "#800080", Pink: "#ffc0cb",
+    Brown: "#a52a2a", Cyan: "#00ffff", Magenta: "#ff00ff", LightGray: "#d3d3d3", LightBlue: "#add8e6"
+  };
+  if (named[str]) return named[str];
+  let m = str.match(/RGBColor\[\s*([^\]]+)\]/);
+  if (m) {
+    const [r, g, b] = m[1].split(",").map(s => parseFloat(s.trim()));
+    const toHex = v => Math.round(Math.max(0, Math.min(1, v || 0)) * 255).toString(16).padStart(2, "0");
+    return "#" + toHex(r) + toHex(g) + toHex(b);
+  }
+  m = str.match(/Hue\[\s*([^\]]+)\]/);
+  if (m) {
+    const parts = m[1].split(",").map(s => parseFloat(s.trim()));
+    return hsvToHex(parts[0] || 0, parts[1] !== undefined ? parts[1] : 1, parts[2] !== undefined ? parts[2] : 1);
+  }
+  m = str.match(/GrayLevel\[\s*([^\]]+)\]/);
+  if (m) {
+    const v = parseFloat(m[1].split(",")[0]);
+    const toHex = x => Math.round(Math.max(0, Math.min(1, x)) * 255).toString(16).padStart(2, "0");
+    return "#" + toHex(v) + toHex(v) + toHex(v);
+  }
+  return "#000000";
+}
+function findMatchingBracket(str, openIdx) {
+  const open = str[openIdx], close = { "[": "]", "{": "}", "(": ")" }[open];
+  let depth = 0, inStr = false;
+  for (let i = openIdx; i < str.length; i++) {
+    const ch = str[i];
+    if (inStr) { if (ch === '"' && str[i - 1] !== "\\") inStr = false; continue; }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === open) depth++;
+    else if (ch === close) { depth--; if (depth === 0) return i; }
+  }
+  return -1;
+}
+function splitTopLevel(str) {
+  const parts = [];
+  let depth = 0, inStr = false, last = 0;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inStr) { if (ch === '"' && str[i - 1] !== "\\") inStr = false; continue; }
+    if (ch === '"') { inStr = true; continue; }
+    if ("[{(".includes(ch)) depth++;
+    else if ("]})".includes(ch)) depth--;
+    else if (ch === "," && depth === 0) { parts.push(str.slice(last, i)); last = i + 1; }
+  }
+  parts.push(str.slice(last));
+  return parts.map(s => s.trim()).filter(s => s.length > 0);
+}
+function resolveOrAddVertex(st, idMap, token) {
+  const id = st.nextVertexId++;
+  idMap.set(token, id);
+  st.vertices[id] = { x: 0, y: 0, color: "#000000", label: token.replace(/^"(.*)"$/, "$1") };
+  return id;
+}
+function parseWLGraph(text) {
+  text = text.trim();
+  const gi = text.indexOf("Graph[");
+  if (gi === -1) throw new Error('Could not find "Graph[" in the input.');
+  const openIdx = gi + "Graph".length;
+  const closeIdx = findMatchingBracket(text, openIdx);
+  if (closeIdx === -1) throw new Error("Unbalanced brackets in Graph[...] expression.");
+  const args = splitTopLevel(text.slice(openIdx + 1, closeIdx));
+  if (args.length < 2) throw new Error("Graph[...] needs at least a vertex list and an edge list.");
+
+  const newState = freshState();
+  const idMap = new Map(); // original token text -> internal vertex id
+  splitTopLevel(args[0].trim().replace(/^\{/, "").replace(/\}$/, "")).forEach(tok => {
+    tok = tok.trim();
+    const id = newState.nextVertexId++;
+    idMap.set(tok, id);
+    newState.vertices[id] = { x: 0, y: 0, color: "#000000", label: tok.replace(/^"(.*)"$/, "$1") };
+  });
+
+  const options = {};
+  for (let i = 2; i < args.length; i++) {
+    const m = args[i].match(/^([A-Za-z]+)\s*->\s*([\s\S]*)$/);
+    if (m) options[m[1]] = m[2].trim();
+  }
+
+  splitTopLevel(args[1].trim().replace(/^\{/, "").replace(/\}$/, "")).forEach(tok => {
+    tok = tok.trim();
+    let from, to, directed = true, m;
+    if ((m = tok.match(/^(DirectedEdge|UndirectedEdge)\[([\s\S]+)\]$/))) {
+      directed = m[1] === "DirectedEdge";
+      const parts = splitTopLevel(m[2]);
+      from = parts[0]; to = parts[1];
+    } else if ((m = tok.match(/^(.+?)<->(.+)$/))) {
+      directed = false; from = m[1].trim(); to = m[2].trim();
+    } else if ((m = tok.match(/^(.+?)->(.+)$/))) {
+      directed = true; from = m[1].trim(); to = m[2].trim();
+    } else return;
+    if (from === undefined || to === undefined) return;
+    const fromId = idMap.has(from) ? idMap.get(from) : resolveOrAddVertex(newState, idMap, from);
+    const toId = idMap.has(to) ? idMap.get(to) : resolveOrAddVertex(newState, idMap, to);
+    newState.edges.push({ id: newState.nextEdgeId++, from: fromId, to: toId, directed, color: "#000000", width: 2.5 });
+  });
+
+  const vIds = Object.keys(newState.vertices).map(Number);
+  const cx = VIEW_W / 2, cy = VIEW_H / 2;
+  vIds.forEach((id, i) => {
+    const angle = (2 * Math.PI * i) / Math.max(1, vIds.length);
+    newState.vertices[id].x = cx + 200 * Math.cos(angle);
+    newState.vertices[id].y = cy + 200 * Math.sin(angle);
+  });
+
+  if (options.VertexCoordinates) {
+    const inner = options.VertexCoordinates.replace(/^\{/, "").replace(/\}$/, "");
+    splitTopLevel(inner).forEach(rule => {
+      const m = rule.match(/^(.+?)->\s*\{([^}]+)\}$/);
+      if (!m) return;
+      const id = idMap.get(m[1].trim());
+      if (id === undefined || !newState.vertices[id]) return;
+      const [xr, yr] = m[2].split(",").map(s => parseFloat(s.trim()));
+      const scale = 40;
+      newState.vertices[id].x = cx + xr * scale;
+      newState.vertices[id].y = cy - yr * scale;
+    });
+  }
+  if (options.VertexStyle) {
+    if (options.VertexStyle.startsWith("{")) {
+      splitTopLevel(options.VertexStyle.slice(1, -1)).forEach(rule => {
+        const m = rule.match(/^(.+?)->\s*([\s\S]+)$/);
+        if (!m) return;
+        const id = idMap.get(m[1].trim());
+        if (id !== undefined && newState.vertices[id]) newState.vertices[id].color = fromWLColor(m[2]);
+      });
+    } else {
+      const hex = fromWLColor(options.VertexStyle);
+      vIds.forEach(id => { newState.vertices[id].color = hex; });
+    }
+  }
+  if (options.EdgeStyle) {
+    if (options.EdgeStyle.startsWith("{")) {
+      splitTopLevel(options.EdgeStyle.slice(1, -1)).forEach(rule => {
+        const m = rule.match(/^(DirectedEdge|UndirectedEdge)\[([\s\S]+?)\]\s*->\s*([\s\S]+)$/);
+        if (!m) return;
+        const parts = splitTopLevel(m[2]);
+        const fromId = idMap.get(parts[0].trim()), toId = idMap.get(parts[1].trim());
+        const edge = newState.edges.find(e => e.from === fromId && e.to === toId);
+        if (edge) edge.color = fromWLColor(m[3]);
+      });
+    } else {
+      const hex = fromWLColor(options.EdgeStyle);
+      newState.edges.forEach(e => { e.color = hex; });
+    }
+  }
+  if (options.VertexLabels && options.VertexLabels.startsWith("{")) {
+    splitTopLevel(options.VertexLabels.slice(1, -1)).forEach(rule => {
+      const m = rule.match(/^(.+?)->\s*"?([^"]*)"?$/);
+      if (!m) return;
+      const id = idMap.get(m[1].trim());
+      if (id !== undefined && newState.vertices[id]) newState.vertices[id].label = m[2];
+    });
+  }
+  return newState;
+}
+document.getElementById("importWLBtn").onclick = () => {
+  const text = document.getElementById("wlImportInput").value;
+  if (!text.trim()) return;
+  try {
+    const parsed = parseWLGraph(text);
+    pushUndo();
+    state = parsed;
+    selection = null; editingChartId = null; buildingChart = []; buildingChartEdges = []; addEdgeFirst = null; lastPlacedVertexId = null;
+    render();
+  } catch (err) {
+    alert("Could not parse Graph[...]: " + err.message);
+  }
+};
+
+document.getElementById("exportWLBtn").onclick = () => {
+  const wl = buildWLGraphString();
+  document.getElementById("wlOutput").value = wl;
+  document.getElementById("coverOutput").value = buildCoverString();
+  if (navigator.clipboard) navigator.clipboard.writeText(wl).catch(() => {});
+};
+document.getElementById("exportJSONBtn").onclick = () => {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "graphmaker-export.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+document.getElementById("importJSONInput").onchange = e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      data.charts = (data.charts || []).map(c => ({ ...c, edges: c.edges || [] }));
+      data.edges = (data.edges || []).map(e => ({ ...e, width: e.width || 2.5 }));
+      pushUndo();
+      state = data;
+      selection = null; editingChartId = null; buildingChart = []; buildingChartEdges = []; addEdgeFirst = null; lastPlacedVertexId = null;
+      render();
+    } catch (err) {
+      alert("Invalid JSON file.");
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = "";
+};
+
+render();
+</script>
+</body>
+</html>
